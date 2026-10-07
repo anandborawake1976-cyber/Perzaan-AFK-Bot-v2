@@ -1,37 +1,28 @@
 const mineflayer = require('mineflayer');
-const { Movements, pathfinder, goals } = require('mineflayer-pathfinder');
-const { GoalBlock } = goals;
+const { pathfinder } = require('mineflayer-pathfinder');
 const config = require('./settings.json');
 const express = require('express');
-const http = require('http');
 
 // ============================================================
-// EXPRESS SERVER - Keep Render/Railway alive
+// EXPRESS HEALTH CHECK SERVER
 // ============================================================
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Bot state tracking for the Live Dashboard
 let botState = {
   connected: false,
-  lastActivity: Date.now(),
-  reconnectAttempts: 0,
   startTime: Date.now(),
-  coords: null,
-  errors: []
+  coords: null
 };
 
-// API Endpoint for the Web Dashboard script to poll
 app.get('/health', (req, res) => {
   res.json({
     status: botState.connected ? 'connected' : 'disconnected',
     uptime: Math.floor((Date.now() - botState.startTime) / 1000),
-    coords: botState.coords,
-    attempts: botState.reconnectAttempts
+    coords: botState.coords
   });
 });
 
-// HTML Live Status Dashboard
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -49,19 +40,15 @@ app.get('/', (req, res) => {
           .status-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; background-color: currentColor; }
           .pulse { animation: pulse 2s infinite; }
           @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-          .connection-bar { height: 4px; background: #334155; width: 100%; margin-top: 20px; border-radius: 2px; overflow: hidden; }
-          .connection-fill { height: 100%; width: 100%; background: #2dd4bf; animation: loading 2s infinite linear; }
-          @keyframes loading { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
         </style>
       </head>
       <body>
-        <div class="container" id="main-container">
+        <div class="container">
           <h1><span id="live-indicator" class="status-dot pulse" style="color: #ef4444;"></span> ${config.name}</h1>
           <div class="stat-card"><div class="label">Status</div><div class="value" id="status-text">Connecting...</div></div>
           <div class="stat-card"><div class="label">Uptime</div><div class="value" id="uptime-text">0h 0m 0s</div></div>
           <div class="stat-card"><div class="label">Coordinates</div><div class="value" id="coords-text">Waiting...</div></div>
           <div class="stat-card"><div class="label">Server</div><div class="value">${config.server.ip}</div></div>
-          <div class="connection-bar"><div class="connection-fill"></div></div>
         </div>
         <script>
           const formatUptime = (seconds) => {
@@ -91,10 +78,10 @@ app.get('/', (req, res) => {
               if (data.coords) {
                 coordsText.innerText = \`X: \${Math.floor(data.coords.x)}, Y: \${Math.floor(data.coords.y)}, Z: \${Math.floor(data.coords.z)}\`;
               } else {
-                coordsText.innerText = 'Spawn Lobby';
+                coordsText.innerText = 'Syncing...';
               }
             } catch (e) {
-              document.getElementById('status-text').innerText = 'System Offline';
+              document.getElementById('status-text').innerText = 'Offline';
             }
           };
           setInterval(updateStats, 1000);
@@ -106,79 +93,83 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Express] Web dashboard listening on port ${PORT}`);
+  console.log(`[Dashboard Node] Listening on port ${PORT}`);
 });
 
 // ============================================================
-// MINEFLAYER MINECRAFT BOT LOGIC
+// CORE MINECRAFT CLIENT ENGINE
 // ============================================================
 const botArgs = {
   host: config.server.ip,
   port: parseInt(config.server.port) || 25565,
-  username: config.botOptions.username,
-  version: false // 'false' forces automatic client version handling to work alongside ViaVersion
+  username: config["bot-account"].username,
+  version: config.server.version || "1.21.1"
 };
 
 let bot;
 
-function initBot() {
-  console.log(`[Mineflayer] Attempting to connect to ${botArgs.host}:${botArgs.port}...`);
+function startMinecraftBot() {
+  console.log(`[Engine] Opening pipeline to ${botArgs.host}:${botArgs.port}`);
   bot = mineflayer.createBot(botArgs);
-  
-  // Load Pathfinder plugin components
+
   bot.loadPlugin(pathfinder);
 
   bot.on('spawn', () => {
     botState.connected = true;
-    botState.reconnectAttempts = 0;
-    console.log(`[Mineflayer] ${botArgs.username} successfully entered the game world.`);
-    
-    // Track coords for dashboard data feed
+    console.log(`[Engine] Spawn complete. Managing session profile: ${botArgs.username}`);
+
+    // Update spatial coords for the live data feed
     setInterval(() => {
       if (bot && bot.entity) {
         botState.coords = bot.entity.position;
       }
     }, 1000);
 
-    // ANTI-AFK GLITCH FIX: Forces jumps to bypass Play Hosting's inactivity server kicks
-    setInterval(() => {
-      if (bot && bot.setControlState) {
-        bot.setControlState('jump', true);
-        setTimeout(() => bot.setControlState('jump', false), 400);
-      }
-    }, 20000);
+    // Structural loop mapping for Movement parameters
+    if (config.movement && config.movement.enabled && config.movement["random-jump"]?.enabled) {
+      setInterval(() => {
+        if (bot && bot.setControlState) {
+          bot.setControlState('jump', true);
+          setTimeout(() => bot.setControlState('jump', false), 400);
+        }
+      }, config.movement["random-jump"].interval || 10000);
+    }
   });
 
-  // GLITCH FIXER: Intercepts game chat logs to instantly clear AuthMe / FastLogin security
+  // GLITCH EXTERMINATOR: Explicit system parsing for AuthMe chat protocols
   bot.on('message', (jsonMsg) => {
-    const chatLine = jsonMsg.toString().toLowerCase();
-    const cleanPassword = config.botOptions.password;
+    const chatFeed = jsonMsg.toString().toLowerCase();
+    
+    if (config.utils && config.utils["auto-auth"] && config.utils["auto-auth"].enabled) {
+      const passcode = config.utils["auto-auth"].password;
 
-    // Condition 1: Direct register request matches
-    if (chatLine.includes('/register') || chatLine.includes('register <password>')) {
-      console.log("[Security Interface] Caught AuthMe /register prompt. Transmitting authentication packages...");
-      bot.chat(`/register ${cleanPassword} ${cleanPassword}`);
-    }
+      if (chatFeed.includes('/register') || chatFeed.includes('register <password>')) {
+        console.log("[Authentication Script] Processing Register hook context...");
+        bot.chat(`/register ${passcode} ${passcode}`);
+      }
 
-    // Condition 2: Regular login prompt matches
-    if (chatLine.includes('/login') || chatLine.includes('login <password>')) {
-      console.log("[Security Interface] Caught AuthMe /login prompt. Transmitting authentication packages...");
-      bot.chat(`/login ${cleanPassword}`);
+      if (chatFeed.includes('/login') || chatFeed.includes('login <password>')) {
+        console.log("[Authentication Script] Processing Login hook context...");
+        bot.chat(`/login ${passcode}`);
+      }
     }
   });
 
-  // Keep-Alive Loop: Restarts process instantly if server boots bot out
+  // Safe failover handler
   bot.on('end', (reason) => {
     botState.connected = false;
     botState.coords = null;
-    console.log(`[Mineflayer] Lost connection: ${reason}. Scheduling automatic retry in 15 seconds...`);
-    setTimeout(initBot, 15000);
+    const retryDelay = config.utils["auto-reconnect-delay"] || 2000;
+    console.log(`[Connection Interrupted] Reason: ${reason}. Triggering re-initialization routine in ${retryDelay}ms...`);
+    
+    if (config.utils && config.utils["auto-reconnect"]) {
+      setTimeout(startMinecraftBot, retryDelay);
+    }
   });
 
   bot.on('error', (err) => {
-    console.error(`[Fatal Network Error] Connection pipeline broke: ${err.message}`);
+    console.error(`[Pipeline Error] Runtime exception observed: ${err.message}`);
   });
 }
 
-// Initial deployment execution call
-initBot();
+startMinecraftBot();
