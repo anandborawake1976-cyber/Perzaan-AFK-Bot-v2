@@ -7,8 +7,8 @@
   },
   "server": {
     "ip": "prodotg4mer.play.hosting",
-    "port": 19132,
-    "version": "1.21.1"
+    "port": 25565,
+    "version": false
   },
   "position": {
     "enabled": true,
